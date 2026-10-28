@@ -1,0 +1,23 @@
+# Keeps pinned versions current. Dependabot opens PRs that update the
+# action SHAs, Python packages and the Docker base image digest; the CI
+# pipeline then tests and scans each update before it is merged.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7   # wait a week after a release before proposing it
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

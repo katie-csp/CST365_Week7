@@ -1,0 +1,11 @@
+# Trivy exceptions for HealthQueue. Every entry needs a reason and an expiry date.
+# Image and Kubernetes findings only. OpenTofu exceptions are inline in infra/*.tf.
+
+# KSV-0013: image uses the mutable `latest` tag. No image has been published yet,
+# so there is no immutable sha-<commit> tag to pin. After the first CI publish,
+# set newTag in k8s/base/kustomization.yaml to sha-<commit> and delete this line.
+KSV-0013 exp:2026-12-31
+
+# KSV-0125: ghcr.io is not on Trivy's default trusted-registry list. Our GHCR
+# images are built by our own CI and signed with Cosign (see SUPPLY_CHAIN_SECURITY.md).
+KSV-0125

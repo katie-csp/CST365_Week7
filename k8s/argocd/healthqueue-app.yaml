@@ -1,0 +1,62 @@
+# Argo CD project + application for HealthQueue.
+# Apply with:  kubectl apply -n argocd -f k8s/argocd/healthqueue-app.yaml
+#
+# "Approved changes" = commits merged to `main` through a reviewed pull
+# request (enable branch protection on main). Argo CD watches main and
+# automatically applies, prunes and self-heals to match Git.
+---
+# A dedicated project limits this app to ONE repo and ONE namespace,
+# instead of the unrestricted `default` project.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: healthqueue
+  namespace: argocd
+spec:
+  description: HealthQueue API (synthetic data only)
+  sourceRepos:
+    - https://github.com/katie-csp/CST365_Week7.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: healthqueue
+  # The only cluster-scoped object the app may create is its own Namespace.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ServiceAccount
+    - group: apps
+      kind: Deployment
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: healthqueue-api
+  namespace: argocd
+  # Deleting the Application also deletes the resources it created.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io/foreground
+spec:
+  project: healthqueue
+  source:
+    repoURL: https://github.com/katie-csp/CST365_Week7.git
+    targetRevision: main
+    path: k8s/base
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: healthqueue
+  syncPolicy:
+    automated:
+      prune: true    # delete resources that were removed from Git
+      selfHeal: true # undo manual changes made with kubectl
+    syncOptions:
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

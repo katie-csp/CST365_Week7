@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+.venv/
+venv/
+
+# Test / tool caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment secrets
+.env
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# OpenTofu / Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+crash.*.log
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+backend.hcl
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# Keep .terraform.lock.hcl committed (pins provider checksums)
+
+# AWS credentials must never be committed
+.aws/
+*.pem
+
+# Local scan, SBOM and report outputs
+*.sarif
+sbom*.json
+image.tar*
+dora_*.json
+dora_*.csv

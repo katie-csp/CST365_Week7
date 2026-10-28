@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: healthqueue-api
+spec:
+  # ONE replica on purpose: appointments live in memory, so extra
+  # replicas would each hold different data. Scale out after adding a database.
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: healthqueue-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0 # start the new pod before stopping the old one
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: healthqueue-api
+    spec:
+      serviceAccountName: healthqueue-api
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+
+      # Pod-level security: everything runs as the image's non-root user.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: api
+          image: healthqueue-api # real name/tag is set by kustomization.yaml `images`
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 5000
+              protocol: TCP
+
+          # Container-level security: read-only filesystem, no privileges.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+
+          # Startup: give Gunicorn up to 30s to boot before other probes run.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            # Gunicorn takes ~4-6s to bind on kind. An occasional early
+            # "connection refused" event is normal; failureThreshold allows ~35s.
+            initialDelaySeconds: 5
+            periodSeconds: 3
+            failureThreshold: 10
+          # Readiness: only send traffic when /health answers.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # Liveness: restart the container if it stops responding.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+          # Writable scratch space, since the root filesystem is read-only.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

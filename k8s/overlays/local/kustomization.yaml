@@ -1,0 +1,22 @@
+# Local testing on kind: uses the image built on this machine
+# (loaded with `kind load docker-image`) instead of pulling from GHCR.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# Must match the name the base already set (not the original placeholder).
+images:
+  - name: ghcr.io/katie-csp/cst365_week7
+    newName: healthqueue-api
+    newTag: ci
+
+patches:
+  - target:
+      kind: Deployment
+      name: healthqueue-api
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Never

@@ -1,0 +1,300 @@
+# HealthQueue CI/CD supply-chain pipeline
+#
+#   test ────────────┐
+#                    ├──► build-and-scan ──► publish-and-sign   (publish: push to main only)
+#   validate-config ─┘
+#
+# Security notes:
+#   * No stored secrets. GHCR login uses the short-lived GITHUB_TOKEN; Cosign and
+#     GitHub attestations sign "keyless" with a GitHub OIDC token.
+#   * Default permissions are empty; each job asks only for what it needs.
+#   * Pull requests never get write permissions or OIDC tokens.
+#   * Every third-party action is pinned to a full commit SHA (tag in comment).
+#   * The exact image that Trivy scanned is the one that gets pushed and signed.
+
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Deny all permissions by default.
+permissions: {}
+
+# Cancel older runs for the same branch/PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LOCAL_IMAGE: healthqueue-api:ci
+
+jobs:
+  # ------------------------------------------------------------------
+  test:
+    name: Run pytest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest -v
+
+  # ------------------------------------------------------------------
+  # OpenTofu + Kubernetes checks. Offline only: the AWS provider is mocked,
+  # no cloud credentials are used, and nothing is deployed.
+  validate-config:
+    name: Validate IaC & manifests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@847eaa4afeb791b06daa46e8eafa8b1b68d7cfb4 # v2.0.1
+        with:
+          tofu_version: 1.13.0
+          tofu_wrapper: false
+
+      - name: OpenTofu fmt, validate and test (mocked AWS)
+        run: |
+          tofu fmt -check -recursive infra
+          for dir in infra infra/bootstrap; do
+            tofu -chdir="$dir" init -backend=false -input=false
+            tofu -chdir="$dir" validate
+          done
+          tofu -chdir=infra test
+
+      - name: Render Kustomize manifests
+        run: |
+          mkdir -p rendered
+          kubectl kustomize k8s/base > rendered/base.yaml
+          kubectl kustomize k8s/overlays/local > rendered/local.yaml
+
+      - name: Kubernetes schema validation (kubeconform)
+        run: |
+          docker run --rm -v "$PWD/rendered:/r:ro" \
+            ghcr.io/yannh/kubeconform:v0.7.0@sha256:85dbef6b4b312b99133decc9c6fc9495e9fc5f92293d4ff3b7e1b30f5611823c \
+            -strict -summary /r/base.yaml /r/local.yaml
+
+      - name: Trivy misconfiguration scan (OpenTofu)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: infra
+          exit-code: "1"
+
+      - name: Trivy misconfiguration scan (rendered Kubernetes)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: rendered
+          trivyignores: .trivyignore
+          exit-code: "1"
+          skip-setup-trivy: true
+
+  # ------------------------------------------------------------------
+  build-and-scan:
+    name: Build, scan & SBOM
+    needs: [test, validate-config]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read          # check out code
+      security-events: write  # upload Trivy results to the Security tab
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build image
+        env:
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          docker build --pull \
+            --label "org.opencontainers.image.source=${REPO_URL}" \
+            --label "org.opencontainers.image.revision=${COMMIT_SHA}" \
+            --label "org.opencontainers.image.title=healthqueue-api" \
+            -t "${LOCAL_IMAGE}" .
+
+      # 1) Report every finding to the GitHub Security tab (never fails the build).
+      - name: Trivy scan (SARIF report)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.LOCAL_IMAGE }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          exit-code: "0"
+
+      # Code scanning is free for public repos; private repos need GitHub Advanced Security.
+      - name: Upload Trivy results to Security tab
+        if: github.event.repository.visibility == 'public'
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-image
+
+      # 2) Security gate: fail the pipeline on fixable HIGH/CRITICAL vulnerabilities.
+      - name: Trivy security gate (HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.LOCAL_IMAGE }}
+          trivyignores: .trivyignore
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          skip-setup-trivy: true   # already installed by the previous Trivy step
+
+      - name: Generate SBOM with Syft (SPDX JSON)
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: ${{ env.LOCAL_IMAGE }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Save scanned image to a file
+        run: docker save "${LOCAL_IMAGE}" | gzip > image.tar.gz
+
+      - name: Upload image + SBOM for the publish job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: healthqueue-image
+          path: |
+            image.tar.gz
+            sbom.spdx.json
+            trivy-results.sarif
+          retention-days: 7
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------
+  publish-and-sign:
+    name: Publish, sign & attest
+    needs: build-and-scan
+    # Only publish from the main branch, never from pull requests.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      packages: write      # push to GitHub Container Registry
+      id-token: write      # GitHub OIDC token for keyless signing
+      attestations: write  # store build provenance in GitHub
+    steps:
+      - name: Download scanned image + SBOM
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: healthqueue-image
+
+      - name: Compute image name
+        id: names
+        run: |
+          # GHCR image names must be lowercase.
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "Image: ${IMAGE}"
+
+      - name: Log in to GHCR (short-lived GITHUB_TOKEN, no stored secret)
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Load, tag and push image
+        id: push
+        env:
+          IMAGE: ${{ steps.names.outputs.image }}
+        run: |
+          docker load --input image.tar.gz
+          SHORT_SHA="${GITHUB_SHA::7}"
+          docker tag "${LOCAL_IMAGE}" "${IMAGE}:sha-${SHORT_SHA}"
+          docker tag "${LOCAL_IMAGE}" "${IMAGE}:latest"
+          docker push "${IMAGE}:sha-${SHORT_SHA}"
+          docker push "${IMAGE}:latest"
+
+          # Sign by immutable digest, never by tag.
+          DIGEST=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${IMAGE}:sha-${SHORT_SHA}" \
+                   | grep "^${IMAGE}@" | head -1 | cut -d@ -f2)
+          if [[ ! "${DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::Could not determine pushed image digest"; exit 1
+          fi
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Pushed ${IMAGE}@${DIGEST}"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign image with Cosign (keyless, GitHub OIDC)
+        env:
+          IMAGE_REF: ${{ steps.names.outputs.image }}@${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "${IMAGE_REF}"
+
+      - name: Attach signed SBOM attestation with Cosign
+        env:
+          IMAGE_REF: ${{ steps.names.outputs.image }}@${{ steps.push.outputs.digest }}
+        run: cosign attest --yes --type spdxjson --predicate sbom.spdx.json "${IMAGE_REF}"
+
+      # SLSA build provenance. Free for public repos; private repos need GitHub Enterprise Cloud.
+      - name: Generate SLSA build provenance
+        if: github.event.repository.visibility == 'public'
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-name: ${{ steps.names.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Verify signature and SBOM attestation
+        env:
+          IMAGE_REF: ${{ steps.names.outputs.image }}@${{ steps.push.outputs.digest }}
+          # Only this workflow file, on main, in this repo, is a trusted signer.
+          SIGNER: ${{ github.server_url }}/${{ github.workflow_ref }}
+        run: |
+          cosign verify "${IMAGE_REF}" \
+            --certificate-identity "${SIGNER}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
+          cosign verify-attestation "${IMAGE_REF}" --type spdxjson \
+            --certificate-identity "${SIGNER}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
+          echo "Signature and SBOM attestation verified for ${IMAGE_REF}"
+
+      - name: Write job summary
+        env:
+          IMAGE_REF: ${{ steps.names.outputs.image }}@${{ steps.push.outputs.digest }}
+        run: |
+          {
+            echo "### Published image"
+            echo '```'
+            echo "${IMAGE_REF}"
+            echo '```'
+            echo "Signed with Cosign (keyless) and attested with an SPDX SBOM."
+          } >> "$GITHUB_STEP_SUMMARY"

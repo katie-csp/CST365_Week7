@@ -1,0 +1,7 @@
+# Allowlist approach: ignore EVERYTHING, then add back only what the
+# image needs. New files (secrets, .env, data exports, notes) can never
+# slip into the image by accident.
+*
+
+!app.py
+!requirements.txt

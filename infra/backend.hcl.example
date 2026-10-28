@@ -1,0 +1,7 @@
+# Copy to backend.hcl (git-ignored) and fill in the bucket name from:
+#   tofu -chdir=infra/bootstrap output state_bucket_name
+# Contains NO credentials - those come from your AWS profile/SSO session.
+
+bucket = "healthqueue-tfstate-<ACCOUNT_ID>-us-west-2"
+key    = "healthqueue/dev/terraform.tfstate" # one key per environment
+region = "us-west-2"
