@@ -75,6 +75,11 @@ def test_empty_period():
     assert m["lead_time_median_hours"] is None
 
 
+def test_report_handles_period_with_no_deployments():
+    report = dm.format_report(dm.calculate_metrics([], days=1))
+    assert "n/a (no deployments)" in report
+
+
 def test_invalid_days_rejected():
     with pytest.raises(ValueError):
         dm.calculate_metrics([], days=0)

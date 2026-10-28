@@ -5,6 +5,7 @@ Only synthetic (fake) data should ever be used with this app.
 """
 
 import os
+import threading
 from datetime import datetime, timezone
 
 from flask import Flask, jsonify, request
@@ -13,6 +14,14 @@ from werkzeug.exceptions import HTTPException
 # Fields a client must send when booking an appointment.
 REQUIRED_FIELDS = ["patient_name", "provider", "date", "time"]
 MAX_TEXT_LENGTH = 100
+
+
+def _matches_format(value, fmt):
+    """True only if `value` is exactly `fmt` (strptime alone accepts "2030-1-5" or "9:30")."""
+    try:
+        return datetime.strptime(value, fmt).strftime(fmt) == value
+    except ValueError:
+        return False
 
 
 def validate_appointment(data):
@@ -35,16 +44,12 @@ def validate_appointment(data):
     # Only check formats if the basic type checks passed.
     date_value = data.get("date")
     if isinstance(date_value, str) and date_value.strip():
-        try:
-            datetime.strptime(date_value, "%Y-%m-%d")
-        except ValueError:
+        if not _matches_format(date_value, "%Y-%m-%d"):
             errors.append("'date' must use the format YYYY-MM-DD.")
 
     time_value = data.get("time")
     if isinstance(time_value, str) and time_value.strip():
-        try:
-            datetime.strptime(time_value, "%H:%M")
-        except ValueError:
+        if not _matches_format(time_value, "%H:%M"):
             errors.append("'time' must use the 24-hour format HH:MM.")
 
     reason = data.get("reason")
@@ -76,6 +81,9 @@ def create_app():
     # In-memory "database": {id: appointment_dict}
     appointments = {}
     next_id = {"value": 1}
+    # Reliability: Gunicorn runs 4 threads, so ID assignment + insert must be
+    # atomic or two concurrent bookings could get the same ID and overwrite each other.
+    store_lock = threading.Lock()
 
     # ---------- Health check ----------
 
@@ -106,8 +114,9 @@ def create_app():
         if errors:
             return error_response(400, "Validation failed.", errors)
 
+        # Security: copy only known fields, so a client can't set `id` or
+        # `status` (or inject extra keys) by adding them to the request body.
         appointment = {
-            "id": next_id["value"],
             "patient_name": data["patient_name"].strip(),
             "provider": data["provider"].strip(),
             "date": data["date"],
@@ -115,8 +124,10 @@ def create_app():
             "reason": (data.get("reason") or "").strip(),
             "status": "scheduled",
         }
-        appointments[appointment["id"]] = appointment
-        next_id["value"] += 1
+        with store_lock:
+            appointment = {"id": next_id["value"], **appointment}
+            appointments[appointment["id"]] = appointment
+            next_id["value"] += 1
         return jsonify(appointment), 201
 
     @app.get("/appointments/<int:appointment_id>")
@@ -143,6 +154,8 @@ def create_app():
 
     @app.errorhandler(Exception)
     def handle_unexpected_error(err):
+        # Security: the stack trace goes to the server log only; the client gets
+        # a generic message so internals (paths, versions, data) never leak.
         app.logger.exception("Unexpected error")
         return error_response(500, "Internal server error.")
 

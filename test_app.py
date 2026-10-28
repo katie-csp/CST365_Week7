@@ -4,6 +4,8 @@ All patient data here is SYNTHETIC - invented names, no real people.
 Run with:  pytest -v
 """
 
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from app import create_app
@@ -97,14 +99,14 @@ def test_blank_field_rejected(client):
     assert response.status_code == 400
 
 
-@pytest.mark.parametrize("bad_date", ["15-01-2030", "2030-13-01", "tomorrow"])
+@pytest.mark.parametrize("bad_date", ["15-01-2030", "2030-13-01", "tomorrow", "2030-1-15"])
 def test_invalid_date_format(client, bad_date):
     response = client.post("/appointments", json={**VALID_APPOINTMENT, "date": bad_date})
     assert response.status_code == 400
     assert "'date' must use the format YYYY-MM-DD." in response.get_json()["error"]["details"]
 
 
-@pytest.mark.parametrize("bad_time", ["9:30am", "25:00", "noon"])
+@pytest.mark.parametrize("bad_time", ["9:30am", "25:00", "noon", "9:30"])
 def test_invalid_time_format(client, bad_time):
     response = client.post("/appointments", json={**VALID_APPOINTMENT, "time": bad_time})
     assert response.status_code == 400
@@ -118,6 +120,27 @@ def test_wrong_type_rejected(client):
 def test_overly_long_name_rejected(client):
     response = client.post("/appointments", json={**VALID_APPOINTMENT, "patient_name": "A" * 101})
     assert response.status_code == 400
+
+
+def test_client_cannot_set_id_or_status(client):
+    response = client.post("/appointments", json={**VALID_APPOINTMENT, "id": 42, "status": "cancelled"})
+    body = response.get_json()
+    assert body["id"] == 1
+    assert body["status"] == "scheduled"
+
+
+def test_concurrent_bookings_get_unique_ids():
+    # Gunicorn serves requests on several threads; IDs must never collide.
+    app = create_app()
+
+    def book(_):
+        with app.test_client() as c:
+            return c.post("/appointments", json=VALID_APPOINTMENT).get_json()["id"]
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        ids = list(pool.map(book, range(50)))
+    assert sorted(ids) == list(range(1, 51))
+    assert len(app.test_client().get("/appointments").get_json()) == 50
 
 
 def test_non_object_json_rejected(client):

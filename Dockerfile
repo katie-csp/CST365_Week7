@@ -57,5 +57,7 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
 # Gunicorn is a production WSGI server. One worker is used because
 # appointments are stored in memory; extra workers would each have
 # separate data. Threads still allow concurrent requests.
+# --worker-tmp-dir /dev/shm keeps Gunicorn's heartbeat file in memory, so it
+# works with a read-only root filesystem (docker --read-only, Kubernetes).
 CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--threads", "4", \
      "--worker-tmp-dir", "/dev/shm", "--access-logfile", "-", "app:create_app()"]

@@ -263,6 +263,9 @@ def _fmt_hours(hours):
 
 def format_report(m):
     s = m["stage_median_hours"]
+    # Short periods (e.g. --days 1 on a weekend) can have zero deployments.
+    cfr = m["change_failure_rate_pct"]
+    cfr_text = "n/a (no deployments)" if cfr is None else f"{cfr:.1f}% of deployments needed immediate intervention"
     lines = [
         "HealthQueue DORA metrics  -- SYNTHETIC DATA --",
         f"Period: {m['period_days']} days | deployments: {m['total_deployments']} "
@@ -276,7 +279,7 @@ def format_report(m):
         f"   median {_fmt_hours(m['lead_time_median_hours'])}, p90 {_fmt_hours(m['lead_time_p90_hours'])}",
         f"   DORA 2024: {classify_lead_time(m['lead_time_median_hours'])}",
         "3. Change failure rate",
-        f"   {m['change_failure_rate_pct']:.1f}% of deployments needed immediate intervention",
+        f"   {cfr_text}",
         f"   DORA 2024: {classify_change_failure_rate(m['change_failure_rate_pct'])}",
         "4. Failed deployment recovery time",
         f"   median {_fmt_hours(m['recovery_median_hours'])}, p90 {_fmt_hours(m['recovery_p90_hours'])}",

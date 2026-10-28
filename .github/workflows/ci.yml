@@ -24,10 +24,11 @@ on:
 # Deny all permissions by default.
 permissions: {}
 
-# Cancel older runs for the same branch/PR.
+# Cancel older runs for the same PR. Runs on main are queued, never cancelled:
+# killing a publish mid-way could leave a pushed image that was never signed.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   LOCAL_IMAGE: healthqueue-api:ci
@@ -44,6 +45,7 @@ jobs:
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Security: don't leave the token in .git/config for later steps to read.
           persist-credentials: false
 
       - name: Set up Python
@@ -169,7 +171,7 @@ jobs:
           trivyignores: .trivyignore
           format: table
           severity: HIGH,CRITICAL
-          ignore-unfixed: true
+          ignore-unfixed: true     # block only on CVEs we can actually fix; the rest stay in the SARIF report
           exit-code: "1"
           skip-setup-trivy: true   # already installed by the previous Trivy step
 
@@ -182,6 +184,8 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
+      # Automation/security: hand the exact scanned bytes to the publish job
+      # instead of rebuilding, so what we sign is what Trivy approved.
       - name: Save scanned image to a file
         run: docker save "${LOCAL_IMAGE}" | gzip > image.tar.gz
 
@@ -237,9 +241,8 @@ jobs:
           docker load --input image.tar.gz
           SHORT_SHA="${GITHUB_SHA::7}"
           docker tag "${LOCAL_IMAGE}" "${IMAGE}:sha-${SHORT_SHA}"
-          docker tag "${LOCAL_IMAGE}" "${IMAGE}:latest"
           docker push "${IMAGE}:sha-${SHORT_SHA}"
-          docker push "${IMAGE}:latest"
+          # `latest` is pushed only after signing + verification (last step).
 
           # Sign by immutable digest, never by tag.
           DIGEST=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${IMAGE}:sha-${SHORT_SHA}" \
@@ -286,6 +289,15 @@ jobs:
             --certificate-identity "${SIGNER}" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
           echo "Signature and SBOM attestation verified for ${IMAGE_REF}"
+
+      # Security: move `latest` only once the image is signed and verified, so a
+      # failed signing step can never leave `latest` pointing at an unsigned image.
+      - name: Promote verified image to latest
+        env:
+          IMAGE: ${{ steps.names.outputs.image }}
+        run: |
+          docker tag "${LOCAL_IMAGE}" "${IMAGE}:latest"
+          docker push "${IMAGE}:latest"
 
       - name: Write job summary
         env:

@@ -69,6 +69,8 @@ resource "aws_subnet" "private" {
   }
 }
 
+# Security: no 0.0.0.0/0 route on purpose - there is no path to or from the
+# internet, only to S3 through the gateway endpoint below.
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.main.id
   tags   = { Name = "${local.name_prefix}-private-rt" }

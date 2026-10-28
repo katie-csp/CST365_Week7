@@ -120,6 +120,16 @@ run "rejects_invalid_cidr" {
   expect_failures = [var.vpc_cidr]
 }
 
+run "rejects_vpc_larger_than_aws_allows" {
+  command = plan
+
+  variables {
+    vpc_cidr = "10.0.0.0/8"
+  }
+
+  expect_failures = [var.vpc_cidr]
+}
+
 run "rejects_single_az" {
   command = plan
 

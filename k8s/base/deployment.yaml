@@ -21,9 +21,9 @@ spec:
         app.kubernetes.io/name: healthqueue-api
     spec:
       serviceAccountName: healthqueue-api
-      automountServiceAccountToken: false
-      enableServiceLinks: false
-      terminationGracePeriodSeconds: 30
+      automountServiceAccountToken: false # no Kubernetes API token for an attacker to steal
+      enableServiceLinks: false           # don't inject other services' addresses as env vars
+      terminationGracePeriodSeconds: 30   # lets Gunicorn finish in-flight requests on SIGTERM
 
       # Pod-level security: everything runs as the image's non-root user.
       securityContext:
@@ -50,6 +50,7 @@ spec:
             capabilities:
               drop: ["ALL"]
 
+          # Requests guarantee scheduling; limits stop a runaway pod from starving the node.
           resources:
             requests:
               cpu: 50m
@@ -58,7 +59,7 @@ spec:
               cpu: 250m
               memory: 128Mi
 
-          # Startup: give Gunicorn up to 30s to boot before other probes run.
+          # Startup: give Gunicorn time to boot before liveness can restart it.
           startupProbe:
             httpGet:
               path: /health

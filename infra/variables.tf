@@ -38,8 +38,9 @@ variable "vpc_cidr" {
   default     = "10.20.0.0/16"
 
   validation {
-    condition     = can(cidrhost(var.vpc_cidr, 0)) && tonumber(split("/", var.vpc_cidr)[1]) <= 24
-    error_message = "vpc_cidr must be a valid IPv4 CIDR block of /24 or larger."
+    # cidrnetmask() only accepts IPv4; AWS allows VPC sizes /16 to /28, and /24 leaves room for /28 subnets.
+    condition     = can(cidrnetmask(var.vpc_cidr)) && try(tonumber(split("/", var.vpc_cidr)[1]) >= 16 && tonumber(split("/", var.vpc_cidr)[1]) <= 24, false)
+    error_message = "vpc_cidr must be a valid IPv4 CIDR block between /16 and /24."
   }
 }
 
