@@ -7,7 +7,7 @@
 # bytes. Dependabot (.github/dependabot.yml) proposes digest updates.
 
 # ---------- Stage 1: builder ----------
-FROM python:3.11-slim@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60 AS builder
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS builder
 
 WORKDIR /build
 
@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
 
 
 # ---------- Stage 2: runtime ----------
-FROM python:3.11-slim@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60 AS runtime
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS runtime
 
 # Don't write .pyc files; send logs straight to Docker.
 ENV PYTHONDONTWRITEBYTECODE=1 \
